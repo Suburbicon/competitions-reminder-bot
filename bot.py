@@ -78,7 +78,7 @@ def format_message(name: str, target_iso: str) -> str:
                 word = "дня"
             else:
                 word = "дней"
-        tail = f"Осталось {days} {word}"
+        tail = f"Осталось {days} {word}, Работаем!"
     elif days == 0:
         tail = "Соревнования сегодня! 🔥"
     else:
