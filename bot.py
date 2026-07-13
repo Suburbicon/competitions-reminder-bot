@@ -15,7 +15,9 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import date, datetime, time as dtime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,6 +37,9 @@ UPDATE_HOUR = int(os.environ.get("UPDATE_HOUR", "9"))   # час ежеднев�
 UPDATE_MINUTE = int(os.environ.get("UPDATE_MINUTE", "0"))
 
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
+
+# порт для health-эндпоинта (Render задаёт PORT автоматически)
+PORT = int(os.environ.get("PORT", "10000"))
 
 SLUG_RE = re.compile(r"^[a-z0-9_-]{1,16}$")
 
@@ -279,11 +284,38 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Настройка очищена. Обновления отключены.")
 
 
+# ----------------------------- health-эндпоинт -----------------------------
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Минимальный HTTP-обработчик: отвечает 200 OK на любой GET.
+
+    Нужен, чтобы Render (Web Service) увидел открытый порт при деплое —
+    сам бот работает через polling и порт не слушает.
+    """
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):  # глушим access-логи
+        pass
+
+
+def start_health_server() -> None:
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logger.info("Health endpoint слушает на 0.0.0.0:%d", PORT)
+
+
 # ----------------------------- запуск -----------------------------
 
 def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Не задана переменная окружения BOT_TOKEN")
+
+    start_health_server()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
