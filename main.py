@@ -48,6 +48,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+# httpx на INFO логирует каждый getUpdates вместе с токеном в URL — глушим
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # ----------------------------- хранение состояния -----------------------------
