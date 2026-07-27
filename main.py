@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -147,11 +148,32 @@ async def refresh_pinned(context: ContextTypes.DEFAULT_TYPE) -> None:
     text = build_pinned_text(events)
 
     try:
+        old_msg_id = state.get("pinned_message_id")
+
+        # сначала пробуем отредактировать уже закреплённое сообщение —
+        # это один API-вызов вместо send + unpin + pin
+        if old_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=old_msg_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+                logger.info("Закреп обновлён (edit): %s", text.replace("\n", " | "))
+                return
+            except BadRequest as e:
+                if "message is not modified" in str(e).lower():
+                    logger.info("Текст закрепа не изменился — пропускаю")
+                    return
+                logger.warning(
+                    "Не удалось отредактировать закреп (%s) — отправлю новое сообщение", e
+                )
+
         msg = await bot.send_message(
             chat_id=chat_id, text=text, parse_mode=ParseMode.HTML
         )
 
-        old_msg_id = state.get("pinned_message_id")
         if old_msg_id:
             try:
                 await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
@@ -286,6 +308,20 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Настройка очищена. Обновления отключены.")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    # временные сетевые сбои и троттлинг — не повод для трейсбека;
+    # BadRequest наследуется от NetworkError, его глушить нельзя
+    if isinstance(err, (TimedOut, RetryAfter)) or (
+        isinstance(err, NetworkError) and not isinstance(err, BadRequest)
+    ):
+        logger.warning("Временная ошибка сети Telegram: %s", err)
+        return
+    logger.error(
+        "Необработанная ошибка при обработке апдейта %s", update, exc_info=err
+    )
+
+
 # ----------------------------- health-эндпоинт -----------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -326,6 +362,7 @@ def main() -> None:
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler(["list", "show"], cmd_list))
     app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_error_handler(on_error)
 
     # ежедневная задача
     app.job_queue.run_daily(
