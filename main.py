@@ -121,8 +121,15 @@ def build_pinned_text(events: list) -> str:
     )
 
 
-async def refresh_pinned(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Создаёт новое сообщение со списком событий и закрепляет его."""
+async def refresh_pinned(
+    context: ContextTypes.DEFAULT_TYPE, notify: bool = False
+) -> None:
+    """Обновляет закреп со списком событий.
+
+    notify=False — тихо редактирует существующий закреп (edit не даёт
+    уведомлений в Telegram). notify=True — отправляет новое сообщение
+    (участники получают уведомление), удаляет старое и закрепляет новое.
+    """
     state = load_state()
     chat_id = state.get("chat_id")
     events = state.get("events", [])
@@ -150,9 +157,9 @@ async def refresh_pinned(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         old_msg_id = state.get("pinned_message_id")
 
-        # сначала пробуем отредактировать уже закреплённое сообщение —
-        # это один API-вызов вместо send + unpin + pin
-        if old_msg_id:
+        # в тихом режиме пробуем отредактировать уже закреплённое сообщение —
+        # это один API-вызов вместо send + delete + pin
+        if old_msg_id and not notify:
             try:
                 await bot.edit_message_text(
                     chat_id=chat_id,
@@ -176,9 +183,17 @@ async def refresh_pinned(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if old_msg_id:
             try:
-                await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
+                await bot.delete_message(chat_id=chat_id, message_id=old_msg_id)
             except Exception as e:
-                logger.warning("Не удалось открепить старое сообщение: %s", e)
+                logger.warning(
+                    "Не удалось удалить старое сообщение (%s) — пробую открепить", e
+                )
+                try:
+                    await bot.unpin_chat_message(
+                        chat_id=chat_id, message_id=old_msg_id
+                    )
+                except Exception as e2:
+                    logger.warning("Не удалось открепить старое сообщение: %s", e2)
 
         await bot.pin_chat_message(
             chat_id=chat_id, message_id=msg.message_id, disable_notification=True
@@ -189,6 +204,11 @@ async def refresh_pinned(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Закреп обновлён: %s", text.replace("\n", " | "))
     except Exception as e:
         logger.exception("Ошибка при обновлении закрепа: %s", e)
+
+
+async def daily_refresh(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ежедневное обновление: новое сообщение, чтобы пришло уведомление."""
+    await refresh_pinned(context, notify=True)
 
 
 # ----------------------------- команды -----------------------------
@@ -366,7 +386,7 @@ def main() -> None:
 
     # ежедневная задача
     app.job_queue.run_daily(
-        refresh_pinned,
+        daily_refresh,
         time=dtime(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, tzinfo=TIMEZONE),
         name="daily_refresh",
     )
